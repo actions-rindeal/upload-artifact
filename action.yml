@@ -1,0 +1,111 @@
+## SPDX-FileCopyrightText: ANNO DOMINI 2024 Jan Chren ~rindeal <dev.rindeal{a}gmail.com>
+## SPDX-License-Identifier: GPL-3.0-only
+##
+## This code is based on https://github.com/actions/upload-artifact
+## SPDX-License-Identifier: MIT (for actions/upload-artifact)
+
+name: 'Upload Artifact'
+description: 'Upload a build artifact'
+author: 'rindeal'
+
+inputs:
+  'name':
+    description: 'Artifact name'
+    default: 'artifact'
+  'path':
+    description: 'A file, directory or wildcard pattern that describes what to upload'
+  'if-no-files-found':
+    description: 'The desired behavior if no files are found using the provided path'
+    default: 'warn'
+  'retention-days':
+    description: 'Duration after which artifact will expire in days. 0 means using default retention.'
+  'compression-level':
+    description: 'The level of compression for Zlib to be applied to the artifact archive'
+    default: '6'
+  'overwrite':
+    description: 'If true, an artifact with a matching name will be deleted before a new one is uploaded'
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: 'Process inputs'
+      id: 'INPUT'
+      shell: python
+      run: |
+        import os, json
+
+        inputs = json.loads(os.environ['INPUTS']); assert isinstance(inputs, dict)
+
+        if not inputs.get('path') and inputs.get('name'):
+          inputs['path'] = inputs['name'] + ".tar"
+
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+          f.write('INPUTS' + '=' + json.dumps(inputs))
+      env:
+        'INPUTS': ${{ toJSON(inputs) }}
+  
+    - name: 'Upload artifact'
+      id: 'UPLOAD'
+      uses: 'actions/upload-artifact@v4'
+      with:
+        'name':              ${{ fromJSON(steps['INPUT'].outputs['INPUTS'])['name'] }}
+        'path':              ${{ fromJSON(steps['INPUT'].outputs['INPUTS'])['path'] }}
+        'if-no-files-found': ${{ fromJSON(steps['INPUT'].outputs['INPUTS'])['if-no-files-found'] }}
+        'retention-days':    ${{ fromJSON(steps['INPUT'].outputs['INPUTS'])['retention-days'] }}
+        'compression-level': ${{ fromJSON(steps['INPUT'].outputs['INPUTS'])['compression-level'] }}
+        'overwrite':         ${{ fromJSON(steps['INPUT'].outputs['INPUTS'])['overwrite'] }}
+
+    - name: 'Process outputs'
+      id: 'OUTPUT'
+      shell: python
+      run: |
+        import os, sys, json, subprocess
+        from typing import Any, Callable
+
+        def jq_pprint(val: dict | str) -> None:
+            import subprocess, json
+            subprocess.run("jq --color-output .".split(), input=val if isinstance(val, str) else json.dumps(val), text=True)
+        
+        def create_artifact(inputs: dict[str, Any], outputs: dict[str, Any], github: dict[str, Any]) -> dict[str, Any]:
+            API_URL = f"{github['api_url']}/repos/{github['repository']}/actions/artifacts/{outputs['artifact-id']}"
+            return {
+                "id": int(outputs['artifact-id']),
+                "name": inputs['name'],
+                "url": API_URL,
+                "archive_download_url": f"{API_URL}/zip",
+                "workflow_run": {
+                    "id": int(github['run_id']),
+                    "repository_full_name": github['repository'],
+                    "repository_id": int(github['repository_id']),
+                    "head_repository_id": int(github['repository_id']),
+                    "head_branch": github['ref_name'],
+                    "head_sha": github['sha'],
+                },
+            }
+        
+        inputs  = json.loads(os.environ['INPUTS']);  assert isinstance(inputs, dict)
+        outputs = json.loads(os.environ['OUTPUTS']); assert isinstance(outputs, dict)
+        github  = json.loads(os.environ['GH']);      assert isinstance(github, dict)
+
+        outputs['artifact'] = create_artifact(inputs, outputs, github)
+
+        outputs_json_str = json.dumps(outputs)
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+            f.write('OUTPUTS' + '=' + outputs_json_str)
+        jq_pprint(outputs_json_str)
+      env:
+        'INPUTS':  ${{ steps['INPUT'].outputs['INPUTS'] }}
+        'OUTPUTS': ${{ toJSON(steps['UPLOAD'].outputs) }}
+        'GH':      ${{ toJSON(github) }}
+
+outputs:
+  'artifact-id':
+    description: 'The ID of the artifact that was uploaded'
+    value: ${{ fromJSON(steps['OUTPUT'].outputs['OUTPUTS'])['artifact-id'] }}
+  'artifact-url':
+    description: 'The download URL for the artifact'
+    value: ${{ fromJSON(steps['OUTPUT'].outputs['OUTPUTS'])['artifact-url'] }}
+  'artifact':
+    description: 'JSON with metadata of the uploaded artifact'
+    value: ${{ toJSON(fromJSON(steps['OUTPUT'].outputs['OUTPUTS'])['artifact']) }}
